@@ -1,14 +1,15 @@
-#!/usr/bin/env python3.5
-import re
-import sys
+#!/usr/bin/env python3
+import abc
 import asyncio
 import locale
-import numpy as np
-import sounddevice as sd
-
+import re
+import signal
+import sys
 from asyncio.subprocess import PIPE
 from contextlib import closing
-import abc
+
+import numpy as np
+import sounddevice as sd
 
 
 class Generator:
@@ -99,7 +100,7 @@ class ExpAttackGenerator(SimpleGenerator):
     duration = GeneratorProperty()
     mute = GeneratorProperty()
 
-    def __init__(self, duration, mute: bool=False):
+    def __init__(self, duration, mute: bool = False):
         super().__init__()
         self.duration = duration
         self.mute = mute
@@ -151,11 +152,12 @@ async def ping(host: str, callback: callable):
             callback(latency)
 
 
-async def play_noise(generator: Generator, duration: int=None,
-                     block_size: int=128):
+async def play_noise(generator: Generator, duration: int = None,
+                     block_size: int = 128):
     def callback(outdata, frames, time, status):
         data = generator.get_next(frames).reshape(frames, generator.CHANNELS)
         outdata[:] = data.reshape(frames, generator.CHANNELS)
+
     with sd.OutputStream(channels=generator.CHANNELS, callback=callback,
                          samplerate=generator.RATE, blocksize=block_size):
         if duration is None:
@@ -165,26 +167,41 @@ async def play_noise(generator: Generator, duration: int=None,
             await asyncio.sleep(duration)
 
 
-if sys.platform == "win32":
-    loop = asyncio.ProactorEventLoop()
-    asyncio.set_event_loop(loop)
-else:
-    loop = asyncio.get_event_loop()
+def run_loop_until_interrupt(loop):
+    def cancel_all_tasks():
+        for task in asyncio.Task.all_tasks():
+            task.cancel()
+        asyncio.ensure_future(stop_the_loop())
 
-with closing(loop):
-    signal_generator = PingSignalGenerator()
-    play_t = asyncio.ensure_future(play_noise(signal_generator))
+    async def stop_the_loop():
+        asyncio.get_event_loop().stop()
 
-    def tune_signal_generator(latency):
-        print(latency)
-        signal_generator.ping(latency)
-
-    ping_t = asyncio.ensure_future(ping("ya.ru", tune_signal_generator))
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, cancel_all_tasks)
     loop.run_forever()
+    loop.close()
 
+
+def cli():
     try:
-        loop.run_forever()
-    except KeyboardInterrupt as e:
-        print("Caught keyboard interrupt. Canceling tasks...")
-        play_t.cancel()
-        ping_t.cancel()
+        hostname = sys.argv[1]
+    except IndexError:
+        print("Usage: aping <hostname>", file=sys.stderr)
+        sys.exit(2)
+
+    if sys.platform == "win32":
+        loop = asyncio.ProactorEventLoop()
+        asyncio.set_event_loop(loop)
+    else:
+        loop = asyncio.get_event_loop()
+
+    with closing(loop):
+        signal_generator = PingSignalGenerator()
+        asyncio.ensure_future(play_noise(signal_generator))
+
+        def tune_signal_generator(latency):
+            print(latency)
+            signal_generator.ping(latency)
+
+        asyncio.ensure_future(ping(hostname, tune_signal_generator))
+        run_loop_until_interrupt(loop)
