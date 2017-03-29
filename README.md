@@ -2,7 +2,7 @@
 
 ## Installation
 
-`pip install fire`
+`pip install aping`
 
 
 ## Basic Usage
